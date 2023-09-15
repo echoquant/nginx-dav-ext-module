@@ -33,6 +33,7 @@
 #define NGX_HTTP_DAV_EXT_PROP_NAMES               0x400
 
 /* TODO! */
+#define HAVE_LINUX_XATTRS
 #define ngx_file_uid(sb)         (sb)->st_uid
 #define ngx_file_gid(sb)         (sb)->st_gid
 #define ngx_file_mode(sb)        (sb)->st_mode
@@ -42,6 +43,9 @@
 #define ngx_de_mode(dir)        (dir)->info.st_mode
 
 #ifdef HAVE_LINUX_XATTRS
+#include <sys/types.h>
+#include <attr/xattr.h>
+
 #define RSYNC_PREFIX "rsync."
 
 #define XSTAT_SUFFIX "stat"
@@ -761,40 +765,41 @@ ngx_http_dav_ext_propfind_xml_end(void *data, const xmlChar *localname,
 
 #ifdef HAVE_LINUX_XATTRS
 static ngx_int_t
-ngx_http_dav_get_xattr(const char* path, ngx_http_dav_ext_entry_t *entry)
+ngx_http_dav_get_xattr(ngx_http_request_t *r, u_char *path, ngx_http_dav_ext_entry_t *entry)
 {
     ssize_t                   xrc;
     char                      xattr_buf[256];
     void                      *xattr_ptr = xattr_buf;
     ngx_int_t                 rc = NGX_ERROR, memfree_rc;
-    int                       rdev_major, rdev_minor, uid, gid, len;
+    unsigned int              mode;
+    int                       rdev_major, rdev_minor, uid, gid;
 
-    xrc = lgetxattr(path, XSTAT_ATTR, xattr_ptr, sizeof(xattr));
+    xrc = lgetxattr((const char*)path, XSTAT_ATTR, xattr_buf, sizeof(xattr_buf));
     if (xrc == -1) {
         if (errno == ERANGE) {
-            xrc = lgetxattr(path, XSTAT_ATTR, xattr_ptr, 0);
+            xrc = lgetxattr((const char*)path, XSTAT_ATTR, xattr_ptr, 0);
             xattr_ptr = ngx_pnalloc(r->pool, xrc);
-            if (xattr_ptr = NULL) {
+            if (xattr_ptr == NULL) {
                 ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
-                              ngx_de_info_n " \"%s\" failed: no memory", filename);
+                              ngx_de_info_n " \"%s\" failed: no memory", path);
                 return NGX_ERROR;
             }
-            xrc = lgetxattr(path, XSTAT_ATTR, xattr_ptr, xrc);
+            xrc = lgetxattr((const char*)path, XSTAT_ATTR, xattr_ptr, xrc);
         }
     }
 
     if (xrc == -1) {
         ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
-                      ngx_de_info_n " \"%s\" xattrs failed", filename);
-        goto cleanup
+                      ngx_de_info_n " \"%s\" xattrs failed", path);
+        goto cleanup;
     }
 
     if (sscanf(xattr_ptr, "%o %d,%d %d:%d",
                &mode, &rdev_major, &rdev_minor, &uid, &gid) != 5) {
         ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
-                      ngx_de_info_n " \"%s\" corrupt \"%s\" xattrs attached: %s", filename, XSTAT_ATTR,
+                      ngx_de_info_n " \"%s\" corrupt \"%s\" xattrs attached: %s", path, XSTAT_ATTR,
                       xattr_ptr);
-        goto cleanup
+        goto cleanup;
     }
 
     entry->st_uid = uid;
@@ -808,7 +813,7 @@ cleanup:
         memfree_rc = ngx_pfree(r->pool, xattr_ptr);
         if (memfree_rc != NGX_OK) {
             ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
-                          ngx_de_info_n " \"%s\" failed: memory free error", filename);
+                          ngx_de_info_n " \"%s\" failed: memory free error", path);
         }
     }
 
@@ -913,7 +918,7 @@ ngx_http_dav_ext_propfind(ngx_http_request_t *r, ngx_uint_t props)
     entry->mtime = ngx_file_mtime(&fi);
     entry->size = ngx_file_size(&fi);
 #ifdef HAVE_LINUX_XATTRS
-    rc = ngx_http_dav_get_xattr(filename, entry);
+    rc = ngx_http_dav_get_xattr(r, path.data, entry);
     if (rc != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -1038,7 +1043,7 @@ ngx_http_dav_ext_propfind(ngx_http_request_t *r, ngx_uint_t props)
         entry->mtime = ngx_de_mtime(&dir);
         entry->size = ngx_de_size(&dir);
 #ifdef HAVE_LINUX_XATTRS
-        rc = ngx_http_dav_get_xattr(filename, entry);
+        rc = ngx_http_dav_get_xattr(r, filename, entry);
         if (rc != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             break;
