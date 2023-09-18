@@ -1042,6 +1042,7 @@ ngx_http_dav_ext_propfind(ngx_http_request_t *r, ngx_uint_t props)
 #ifdef HAVE_LINUX_XATTRS
         rc = ngx_http_dav_get_xattr(r, filename, entry);
         if (rc != NGX_OK) {
+            /* log error and return stats from inode */
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                           ngx_open_dir_n " \"%s\" xattr failed", filename);
             rc = NGX_OK;
